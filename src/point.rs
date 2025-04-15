@@ -104,7 +104,7 @@ impl<T: PrimeField + PartialEq + Clone + Debug> Mul<Point<T>> for BigUint {
     fn mul(self, rhs: Point<T>) -> Self::Output {
         let mut current = rhs;
         let mut result = Point::<T>::infinity();
-        let mut k = self;
+        let mut k = self % T::order();
 
         while k > BigUint::ZERO {
             if k.bit(0) {
@@ -127,6 +127,9 @@ mod tests {
     impl PrimeField for Field223 {
         fn prime() -> BigUint {
             BigUint::from_u64(223).unwrap()
+        }
+        fn order() -> BigUint {
+            BigUint::from_u64(60000).unwrap() // Don't know how to compute, so decided on a bigger value, which won't harm these tests
         }
     }
 

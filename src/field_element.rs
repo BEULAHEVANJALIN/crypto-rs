@@ -114,7 +114,7 @@ mod tests {
     use num_traits::FromPrimitive;
 
     use super::*;
-    use crate::field::PrimeField;
+    use crate::field::{PrimeField, Secp256k1Field};
 
     #[derive(Debug, Clone, Copy)]
     struct Field7;
@@ -122,6 +122,9 @@ mod tests {
     impl PrimeField for Field7 {
         fn prime() -> BigUint {
             BigUint::from_u64(7).unwrap()
+        }
+        fn order() -> BigUint {
+            todo!()
         }
     }
 
@@ -131,6 +134,9 @@ mod tests {
     impl PrimeField for Field31 {
         fn prime() -> BigUint {
             BigUint::from_u64(31).unwrap()
+        }
+        fn order() -> BigUint {
+            todo!()
         }
     }
 
@@ -214,5 +220,20 @@ mod tests {
     fn test_invert() {
         assert_eq!(fe7(3).inverse().value, BigUint::from_u64(5).unwrap()); // 3^-1 ≡ 5 (mod 7)
         assert_eq!(fe7(5).inverse().value, BigUint::from_u64(3).unwrap()); // 5^-1 ≡ 3 (mod 7)
+    }
+
+    use proptest::prelude::*;
+
+    fn biguint_256bit_strategy() -> impl Strategy<Value = BigUint> {
+        // Generate 32 bytes (256 bits) and convert to BigUint
+        prop::array::uniform32(any::<u8>()).prop_map(|bytes| BigUint::from_bytes_be(&bytes))
+    }
+
+    proptest! {
+        #[test]
+        fn inverse_test(x in biguint_256bit_strategy()) {
+            let fe: FieldElement<Secp256k1Field> = FieldElement::new(x);
+            prop_assert_eq!(fe.clone() / &fe, FieldElement::new(BigUint::from_bytes_be(&[1])))
+        }
     }
 }
