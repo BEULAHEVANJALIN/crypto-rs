@@ -1,23 +1,34 @@
-use std::ops::{Add, Div, Mul, Neg, Sub};
-use std::marker::PhantomData;
 use std::fmt::{self, Debug};
+use std::marker::PhantomData;
+use std::ops::{Add, Div, Mul, Neg, Sub};
 
-use crate::field::PrimeField;
+use crate::field::Field;
 use num_bigint::BigUint;
 use num_traits::{Euclid, Num, Zero};
+use sha2::{Digest, Sha256};
 
 // Using phantom data to avoid the need to store the prime number for every field element.
-// With this definition the sizeof(FieldElement) == 256
+// With this definition the sizeof(Scalar) == 256
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FieldElement<F: PrimeField> {
-    value: BigUint,
+pub struct Scalar<F: Field> {
+    pub(crate) value: BigUint,
     _marker: PhantomData<F>,
 }
 
-impl<F: PrimeField + Clone + Debug> FieldElement<F> {
-    pub fn new(value: BigUint) -> Self {
+impl<F: Field + Clone> Scalar<F> {
+    pub(crate) fn new(value: BigUint) -> Self {
         let prime = F::prime();
-        Self { value: value % prime, _marker: PhantomData }
+        Self {
+            value: value % prime,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn from_bytes_be(bytes: &[u8]) -> Self {
+        Self {
+            value: BigUint::from_bytes_be(bytes) % F::prime(),
+            _marker: PhantomData,
+        }
     }
 
     pub fn inverse(self) -> Self {
@@ -26,17 +37,17 @@ impl<F: PrimeField + Clone + Debug> FieldElement<F> {
     }
 
     fn extended_gcd(mut a: BigUint, mut b: BigUint) -> (BigUint, Self, Self) {
-        let mut x0 = FieldElement::new(BigUint::from_bytes_be(&[0x1]));
-        let mut x1 = FieldElement::new(BigUint::ZERO);
-        let mut y0 = FieldElement::new(BigUint::ZERO);
-        let mut y1 = FieldElement::new(BigUint::from_bytes_be(&[0x1]));
+        let mut x0 = Scalar::new(BigUint::from_bytes_be(&[0x1]));
+        let mut x1 = Scalar::new(BigUint::ZERO);
+        let mut y0 = Scalar::new(BigUint::ZERO);
+        let mut y1 = Scalar::new(BigUint::from_bytes_be(&[0x1]));
 
         while !b.is_zero() {
             let (quotient, remainder) = a.div_rem_euclid(&b);
             a = b;
             b = remainder;
 
-            let quotient = FieldElement::new(quotient);
+            let quotient = Scalar::new(quotient);
 
             let temp_x = x0 - &(quotient.clone() * &x1);
             x0 = x1;
@@ -55,11 +66,28 @@ impl<F: PrimeField + Clone + Debug> FieldElement<F> {
     }
 
     pub fn from_hex_str(s: &str) -> Self {
-        Self { value: BigUint::from_str_radix(s, 16).unwrap(), _marker: PhantomData }
+        Self {
+            value: BigUint::from_str_radix(s, 16).unwrap(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub(crate) fn tagged_hash(tag: &[u8], bytes: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(tag);
+        let tag_hash = hasher.finalize();
+
+        let mut h = Sha256::new();
+        h.update(&tag_hash);
+        h.update(&tag_hash); // Tagged hash
+        h.update(bytes);
+        let num_bytes = h.finalize();
+
+        Scalar::from_bytes_be(&num_bytes)
     }
 }
 
-impl<F: PrimeField + Clone + Debug> Add<&FieldElement<F>> for FieldElement<F> {
+impl<F: Field + Clone> Add<&Scalar<F>> for Scalar<F> {
     type Output = Self;
 
     fn add(self, rhs: &Self) -> Self::Output {
@@ -67,7 +95,7 @@ impl<F: PrimeField + Clone + Debug> Add<&FieldElement<F>> for FieldElement<F> {
     }
 }
 
-impl<F: PrimeField + Clone + Debug> Sub<&FieldElement<F>> for FieldElement<F> {
+impl<F: Field + Clone> Sub<&Scalar<F>> for Scalar<F> {
     type Output = Self;
 
     fn sub(self, rhs: &Self) -> Self::Output {
@@ -79,7 +107,7 @@ impl<F: PrimeField + Clone + Debug> Sub<&FieldElement<F>> for FieldElement<F> {
     }
 }
 
-impl<F: PrimeField + Clone + Debug> Div<&FieldElement<F>> for FieldElement<F> {
+impl<F: Field + Clone> Div<&Scalar<F>> for Scalar<F> {
     type Output = Self;
 
     fn div(self, rhs: &Self) -> Self::Output {
@@ -87,7 +115,7 @@ impl<F: PrimeField + Clone + Debug> Div<&FieldElement<F>> for FieldElement<F> {
     }
 }
 
-impl<F: PrimeField + Clone + Debug> Mul<&FieldElement<F>> for FieldElement<F> {
+impl<F: Field + Clone> Mul<&Scalar<F>> for Scalar<F> {
     type Output = Self;
 
     fn mul(self, rhs: &Self) -> Self::Output {
@@ -95,7 +123,7 @@ impl<F: PrimeField + Clone + Debug> Mul<&FieldElement<F>> for FieldElement<F> {
     }
 }
 
-impl<F: PrimeField + Clone + Debug> Neg for FieldElement<F> {
+impl<F: Field + Clone> Neg for Scalar<F> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
@@ -103,7 +131,7 @@ impl<F: PrimeField + Clone + Debug> Neg for FieldElement<F> {
     }
 }
 
-impl<F: PrimeField> fmt::Display for FieldElement<F> {
+impl<F: Field> fmt::Display for Scalar<F> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:#x}", self.value)
     }
@@ -114,41 +142,34 @@ mod tests {
     use num_traits::FromPrimitive;
 
     use super::*;
-    use crate::field::{PrimeField, Secp256k1Field};
+    use crate::field::{EccPointField, Field};
 
     #[derive(Debug, Clone, Copy)]
     struct Field7;
 
-    impl PrimeField for Field7 {
+    impl Field for Field7 {
         fn prime() -> BigUint {
             BigUint::from_u64(7).unwrap()
-        }
-        fn order() -> BigUint {
-            todo!()
         }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct Field31;
 
-    impl PrimeField for Field31 {
+    impl Field for Field31 {
         fn prime() -> BigUint {
             BigUint::from_u64(31).unwrap()
         }
-        fn order() -> BigUint {
-            todo!()
-        }
     }
-
 
     #[test]
     fn test_div_jimmy() {
-        let a =fe31(3);
-        let b =fe31(24);
+        let a = fe31(3);
+        let b = fe31(24);
         assert_eq!(a / &b, fe31(4));
-        
+
         let a_inv = fe31(17).inverse();
-        assert_eq!(a_inv.clone() * &a_inv * &a_inv , fe31(29));
+        assert_eq!(a_inv.clone() * &a_inv * &a_inv, fe31(29));
 
         let a_inv = fe31(4).inverse();
         let b = fe31(11);
@@ -166,15 +187,14 @@ mod tests {
         assert_eq!(a + &b, fe31(5));
     }
 
-
-    // Helper: convert a u64 to a FieldElement<Field7> quickly
-    fn fe7(x: u64) -> FieldElement<Field7> {
-        FieldElement::<Field7>::new(BigUint::from_u64(x).unwrap())
+    // Helper: convert a u64 to a Scalar<Field7> quickly
+    fn fe7(x: u64) -> Scalar<Field7> {
+        Scalar::<Field7>::new(BigUint::from_u64(x).unwrap())
     }
 
-    // Helper: convert a u64 to a FieldElement<Field7> quickly
-    fn fe31(x: u64) -> FieldElement<Field31> {
-        FieldElement::<Field31>::new(BigUint::from_u64(x).unwrap())
+    // Helper: convert a u64 to a Scalar<Field7> quickly
+    fn fe31(x: u64) -> Scalar<Field31> {
+        Scalar::<Field31>::new(BigUint::from_u64(x).unwrap())
     }
 
     #[test]
@@ -232,8 +252,8 @@ mod tests {
     proptest! {
         #[test]
         fn inverse_test(x in biguint_256bit_strategy()) {
-            let fe: FieldElement<Secp256k1Field> = FieldElement::new(x);
-            prop_assert_eq!(fe.clone() / &fe, FieldElement::new(BigUint::from_bytes_be(&[1])))
+            let fe: Scalar<EccPointField> = Scalar::new(x);
+            prop_assert_eq!(fe.clone() / &fe, Scalar::new(BigUint::from_bytes_be(&[1])))
         }
     }
 }

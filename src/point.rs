@@ -1,41 +1,46 @@
-use std::{fmt::Debug, ops::{Add, Mul}};
+use std::{
+    fmt::Debug,
+    ops::{Add, Mul, Neg, Sub},
+};
 
-use crate::{field::PrimeField, field_element::FieldElement};
+use crate::{field::Field, scalar::Scalar};
 use num_bigint::BigUint;
 use num_traits::{FromPrimitive, Num};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Point<T: PrimeField> {
-    pub x: FieldElement<T>,
-    pub y: FieldElement<T>,
+pub struct Point<T: Field> {
+    pub x: Scalar<T>,
+    pub y: Scalar<T>,
     pub infinite: bool,
 }
 
-impl <T: PrimeField + Clone + Debug + PartialEq> Point<T> {
+impl<T: Field + Clone + PartialEq> Point<T> {
     pub fn new(x: BigUint, y: BigUint, infinite: bool) -> Self {
         if infinite {
             return Self::infinity();
         }
-        let x = FieldElement::new(x);
-        let y = FieldElement::new(y);
-        assert_eq!(y.clone() * &y, x.clone() * &x * &x + &FieldElement::new(BigUint::from_u64(7).unwrap()), "Point not on the curve");
-
-        Self {
-            x,
-            y,
-            infinite,
+        let x = Scalar::new(x);
+        let y = Scalar::new(y);
+        if y.clone() * &y != x.clone() * &x * &x + &Scalar::new(BigUint::from_u64(7).unwrap()) {
+            panic!("Point not on the curve");
         }
+
+        Self { x, y, infinite }
     }
 
     pub fn from_hex_xy(x: &str, y: &str) -> Self {
-        Self::new(BigUint::from_str_radix(x, 16).unwrap(), BigUint::from_str_radix(y, 16).unwrap(),  false )
+        Self::new(
+            BigUint::from_str_radix(x, 16).unwrap(),
+            BigUint::from_str_radix(y, 16).unwrap(),
+            false,
+        )
     }
 
     /// Returns the point at infinity (identity element).
     pub fn infinity() -> Self {
         Self {
-            x: FieldElement::new(BigUint::ZERO),
-            y: FieldElement::new(BigUint::ZERO),
+            x: Scalar::new(BigUint::ZERO),
+            y: Scalar::new(BigUint::ZERO),
             infinite: true,
         }
     }
@@ -51,7 +56,7 @@ impl <T: PrimeField + Clone + Debug + PartialEq> Point<T> {
             return self.clone();
         }
         // If y = 0, then the tangent is vertical, so return the identity element
-        if self.y == FieldElement::new(BigUint::ZERO) {
+        if self.y == Scalar::new(BigUint::ZERO) {
             return Self::infinity();
         }
 
@@ -65,11 +70,15 @@ impl <T: PrimeField + Clone + Debug + PartialEq> Point<T> {
         let x = s.clone() * &s - &two_x;
         let y = s * &(self.x.clone() - &x) - &self.y;
 
-        Self { x, y, infinite: false }
+        Self {
+            x,
+            y,
+            infinite: false,
+        }
     }
 }
 
-impl <T: PrimeField + PartialEq + Clone + Debug> Add<&Point<T>> for Point<T> {
+impl<T: Field + PartialEq + Clone> Add<&Point<T>> for Point<T> {
     type Output = Self;
 
     fn add(self, other: &Self) -> Self::Output {
@@ -90,7 +99,11 @@ impl <T: PrimeField + PartialEq + Clone + Debug> Add<&Point<T>> for Point<T> {
             let s = (other.y.clone() - &self.y) / &(other.x.clone() - &self.x);
             let x = s.clone() * &s - &self.x - &other.x;
             let y = s * &(self.x - &x) - &self.y;
-            return Self { x, y, infinite: false };
+            return Self {
+                x,
+                y,
+                infinite: false,
+            };
         }
 
         // Otherwise, it's point doubling
@@ -98,13 +111,33 @@ impl <T: PrimeField + PartialEq + Clone + Debug> Add<&Point<T>> for Point<T> {
     }
 }
 
-impl<T: PrimeField + PartialEq + Clone + Debug> Mul<Point<T>> for BigUint {
+impl<T: Field + PartialEq + Clone> Sub<&Point<T>> for Point<T> {
+    type Output = Self;
+
+    fn sub(self, other: &Self) -> Self::Output {
+        self + &(-other.clone())
+    }
+}
+
+impl<T: Field + PartialEq + Clone> Neg for Point<T> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self {
+            x: self.x,
+            y: self.y,
+            infinite: self.infinite,
+        }
+    }
+}
+
+impl<T: Field + PartialEq + Clone, F: Field + PartialEq + Clone> Mul<&Point<T>> for Scalar<F> {
     type Output = Point<T>;
 
-    fn mul(self, rhs: Point<T>) -> Self::Output {
-        let mut current = rhs;
+    fn mul(self, rhs: &Point<T>) -> Self::Output {
+        let mut current = rhs.clone();
         let mut result = Point::<T>::infinity();
-        let mut k = self % T::order();
+        let mut k = self.value;
 
         while k > BigUint::ZERO {
             if k.bit(0) {
@@ -119,17 +152,15 @@ impl<T: PrimeField + PartialEq + Clone + Debug> Mul<Point<T>> for BigUint {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Field223;
 
-    impl PrimeField for Field223 {
+    impl Field for Field223 {
         fn prime() -> BigUint {
             BigUint::from_u64(223).unwrap()
-        }
-        fn order() -> BigUint {
-            BigUint::from_u64(60000).unwrap() // Don't know how to compute, so decided on a bigger value, which won't harm these tests
         }
     }
 
@@ -137,17 +168,25 @@ mod tests {
 
     #[test]
     fn test_on_curve() {
-        let valid_points = vec!((192, 105), (17, 56), (1, 193));
-        let invalid_points = vec!((200, 119), (42, 99));
+        let valid_points = vec![(192, 105), (17, 56), (1, 193)];
+        let invalid_points = vec![(200, 119), (42, 99)];
 
         for (x, y) in valid_points {
-            let p: Point<Field223> = Point::new(BigUint::from_u64(x).unwrap(), BigUint::from_u64(y).unwrap(), false);
+            let p: Point<Field223> = Point::new(
+                BigUint::from_u64(x).unwrap(),
+                BigUint::from_u64(y).unwrap(),
+                false,
+            );
             dbg!(p);
         }
 
         for (x, y) in invalid_points {
             let res = catch_unwind(|| {
-                let p: Point<Field223> = Point::new(BigUint::from_u64(x).unwrap(), BigUint::from_u64(y).unwrap(), false);
+                let p: Point<Field223> = Point::new(
+                    BigUint::from_u64(x).unwrap(),
+                    BigUint::from_u64(y).unwrap(),
+                    false,
+                );
                 dbg!(p);
             });
             assert!(res.is_err());
@@ -156,38 +195,61 @@ mod tests {
 
     #[test]
     fn test_add() {
-        let additions = vec!(
+        let additions = vec![
             // (x1, y1, x2, y2, x3, y3)
             (192, 105, 17, 56, 170, 142),
             (47, 71, 117, 141, 60, 139),
             (143, 98, 76, 66, 47, 71),
-        );
+        ];
         for (x1, y1, x2, y2, x3, y3) in additions {
-            let a: Point<Field223> = Point::new(BigUint::from_u64(x1).unwrap(), BigUint::from_u64(y1).unwrap(), false);
-            let b: Point<Field223> = Point::new(BigUint::from_u64(x2).unwrap(), BigUint::from_u64(y2).unwrap(), false);
-            let c: Point<Field223> = Point::new(BigUint::from_u64(x3).unwrap(), BigUint::from_u64(y3).unwrap(), false);
+            let a: Point<Field223> = Point::new(
+                BigUint::from_u64(x1).unwrap(),
+                BigUint::from_u64(y1).unwrap(),
+                false,
+            );
+            let b: Point<Field223> = Point::new(
+                BigUint::from_u64(x2).unwrap(),
+                BigUint::from_u64(y2).unwrap(),
+                false,
+            );
+            let c: Point<Field223> = Point::new(
+                BigUint::from_u64(x3).unwrap(),
+                BigUint::from_u64(y3).unwrap(),
+                false,
+            );
             assert_eq!(a + &b, c);
         }
     }
 
     #[test]
     fn test_scalar_mul() {
-        let multiplications = vec!(
+        let multiplications: Vec<(u8, u64, u64, u64, u64)> = vec![
             // (coefficient, x1, y1, x2, y2)
             (2, 192, 105, 49, 71),
             (2, 143, 98, 64, 168),
             (2, 47, 71, 36, 111),
             (4, 47, 71, 194, 51),
             (8, 47, 71, 116, 55),
-        );
+        ];
         for (c, x1, y1, x2, y2) in multiplications {
-            let a: Point<Field223> = Point::new(BigUint::from_u64(x1).unwrap(), BigUint::from_u64(y1).unwrap(), false);
-            let b: Point<Field223> = Point::new(BigUint::from_u64(x2).unwrap(), BigUint::from_u64(y2).unwrap(), false);
-            assert_eq!(BigUint::from_u64(c).unwrap() * a, b);
+            let a: Point<Field223> = Point::new(
+                BigUint::from_u64(x1).unwrap(),
+                BigUint::from_u64(y1).unwrap(),
+                false,
+            );
+            let b: Point<Field223> = Point::new(
+                BigUint::from_u64(x2).unwrap(),
+                BigUint::from_u64(y2).unwrap(),
+                false,
+            );
+            assert_eq!(Scalar::<Field223>::from_bytes_be(&[c]) * &a, b);
         }
-        let c = BigUint::from_u64(21).unwrap();
-        let a: Point<Field223> = Point::new(BigUint::from_u64(47).unwrap(), BigUint::from_u64(71).unwrap(), false);
-        assert_eq!(c * a, Point::infinity());
+        let c = Scalar::<Field223>::from_bytes_be(&[21]);
+        let a: Point<Field223> = Point::new(
+            BigUint::from_u64(47).unwrap(),
+            BigUint::from_u64(71).unwrap(),
+            false,
+        );
+        assert_eq!(c * &a, Point::infinity());
     }
-
 }

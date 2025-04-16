@@ -1,4 +1,5 @@
 pub mod field;
-pub mod field_element;
 pub mod point;
-pub mod  secp256k1;
+pub mod scalar;
+pub mod schnorr;
+pub mod secp256k1;
