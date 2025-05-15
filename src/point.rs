@@ -5,7 +5,7 @@ use std::{
 
 use crate::{field::Field, scalar::Scalar};
 use num_bigint::BigUint;
-use num_traits::{FromPrimitive, Num};
+use num_traits::{FromPrimitive, Num, Zero};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point<T: Field> {
@@ -15,17 +15,25 @@ pub struct Point<T: Field> {
 }
 
 impl<T: Field + Clone + PartialEq> Point<T> {
+    pub fn identity() -> Self {
+        Self::infinity()
+    }
+
     pub fn new(x: BigUint, y: BigUint, infinite: bool) -> Self {
         if infinite {
             return Self::infinity();
         }
-        let x = Scalar::new(x);
-        let y = Scalar::new(y);
-        if y.clone() * &y != x.clone() * &x * &x + &Scalar::new(BigUint::from_u64(7).unwrap()) {
-            panic!("Point not on the curve");
+        let p = T::prime();
+        let lhs = (&y * &y) % &p;                                 // y² mod p
+        let rhs = (&x * &x * &x + T::a() * &x + T::b()) % &p;      // (x³ + A·x + B) mod p
+        if lhs != rhs {
+            panic!("Point ({}, {}) is not on the curve", x, y);
         }
-
-        Self { x, y, infinite }
+        Self {
+            x: Scalar::new(x),
+            y: Scalar::new(y),
+            infinite,
+        }
     }
 
     pub fn from_hex_xy(x: &str, y: &str) -> Self {
@@ -76,6 +84,23 @@ impl<T: Field + Clone + PartialEq> Point<T> {
             infinite: false,
         }
     }
+
+    pub fn to_bytes(&self) -> [u8; 33] {
+        if self.infinite {
+            panic!("cannot serialize infinity");
+        }
+        let mut out = [0u8; 33];
+        // prefix: 0x02 if y even, 0x03 if y odd
+        out[0] = if (self.y.value.clone() & BigUint::from(1u8)).is_zero() {
+            0x02
+        } else {
+            0x03
+        };
+        let xb = self.x.value.to_bytes_be();
+        let start = 33 - xb.len();
+        out[start..].copy_from_slice(&xb);
+        out
+    }
 }
 
 impl<T: Field + PartialEq + Clone> Add<&Point<T>> for Point<T> {
@@ -121,12 +146,30 @@ impl<T: Field + PartialEq + Clone> Sub<&Point<T>> for Point<T> {
 
 impl<T: Field + PartialEq + Clone> Neg for Point<T> {
     type Output = Self;
+    fn neg(self) -> Self {
+        if self.infinite {
+            self
+        } else {
+            Self {
+                x: self.x,
+                y: -self.y,
+                infinite: false,
+            }
+        }
+    }
+}
 
-    fn neg(self) -> Self::Output {
-        Self {
-            x: self.x,
-            y: self.y,
-            infinite: self.infinite,
+impl<T: Field + PartialEq + Clone> Neg for &Point<T> {
+    type Output = Point<T>;
+    fn neg(self) -> Point<T> {
+        if self.infinite {
+            self.clone()
+        } else {
+            Point {
+                x: self.x.clone(),
+                y: -self.y.clone(),
+                infinite: false,
+            }
         }
     }
 }
@@ -161,6 +204,14 @@ mod tests {
     impl Field for Field223 {
         fn prime() -> BigUint {
             BigUint::from_u64(223).unwrap()
+        }
+
+        fn a() -> BigUint {
+            BigUint::zero() // y² = x³ + 0·x + 7  over F₃₃
+        }
+
+        fn b() -> BigUint {
+            BigUint::from_u64(7).unwrap()
         }
     }
 
@@ -251,5 +302,19 @@ mod tests {
             false,
         );
         assert_eq!(c * &a, Point::infinity());
+    }
+
+    #[test]
+    fn test_neg() {
+        let a: Point<Field223> = Point::new(
+            BigUint::from_u64(47).unwrap(),
+            BigUint::from_u64(71).unwrap(),
+            false,
+        );
+        // y_neg = -y mod p = (p - y) % p
+        let p = Field223::prime();
+        let y_neg = &p - BigUint::from_u64(71).unwrap();
+        let neg_a: Point<Field223> = Point::new(BigUint::from_u64(47).unwrap(), y_neg, false);
+        assert_eq!(-&a, neg_a);
     }
 }

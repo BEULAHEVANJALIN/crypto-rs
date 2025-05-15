@@ -151,6 +151,12 @@ mod tests {
         fn prime() -> BigUint {
             BigUint::from_u64(7).unwrap()
         }
+        fn a() -> BigUint {
+            BigUint::zero()
+        }
+        fn b() -> BigUint {
+            BigUint::zero()
+        }
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +165,12 @@ mod tests {
     impl Field for Field31 {
         fn prime() -> BigUint {
             BigUint::from_u64(31).unwrap()
+        }
+        fn a() -> BigUint {
+            BigUint::zero()
+        }
+        fn b() -> BigUint {
+            BigUint::zero()
         }
     }
 
