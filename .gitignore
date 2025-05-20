@@ -1,2 +1,4 @@
 Cargo.lock
 /target
+proptest-regressions/
+.DS_Store
