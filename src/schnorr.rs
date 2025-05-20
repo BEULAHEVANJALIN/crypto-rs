@@ -1,144 +1,150 @@
 #![allow(non_snake_case)]
+use std::ops::Neg;
 
-use crate::field::{EccPointField, Field};
-use crate::scalar::Scalar;
-use crate::secp256k1::Secp256k1Point;
+use crate::{
+    field::{ScalarField, Secp256k1ScalarField},
+    secp256k1::{Secp256k1Point, Secp256k1Scalar},
+};
 use num_bigint::BigUint;
-use num_traits::ConstZero;
-use rand::rngs::OsRng;
-use rand::TryRngCore;
 use sha2::{Digest, Sha256};
 
-use crate::field::Secp256k1GroupField;
-
-pub type SecretKey = Scalar<Secp256k1GroupField>;
-pub type PublicKey = Secp256k1Point;
-
-pub struct KeyPair {
-    pub sk: SecretKey,
-    pub pk: PublicKey,
+/// Tagged-SHA256: SHA256(SHA256(tag) || SHA256(tag) || data)
+fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256::digest(tag.as_bytes());
+    let mut h = Sha256::new();
+    h.update(&tag_hash);
+    h.update(&tag_hash);
+    h.update(data);
+    let out = h.finalize();
+    let mut buf = [0u8; 32];
+    buf.copy_from_slice(&out);
+    buf
 }
 
-pub struct Signature {
-    pub r_x: Scalar<EccPointField>,
-    pub s: Scalar<Secp256k1GroupField>,
+/// BIP-340 keypair: derive x-only public key from secret scalar
+pub fn schnorr_pubkey(sk: &Secp256k1Scalar) -> [u8; 32] {
+    let g = Secp256k1Point::generator();
+    let p = &g * sk; // scalar_mul under the hood
+    p.x_only_bytes() // 32-byte big-endian X
 }
 
-impl KeyPair {
-    pub fn generate() -> Self {
-        let prime = Secp256k1GroupField::prime();
-        let num = loop {
-            let mut bytes = [0u8; 32];
-            if OsRng.try_fill_bytes(&mut bytes).is_err() {
-                continue;
-            }
+/// BIP-340 Sign
+///
+/// - `sk`: secret scalar (0 < sk < n)
+/// - `msg`: arbitrary message bytes
+/// - `aux`: optional 32-byte auxiliary randomness (if `None`, use zeroes)
+///
+/// Returns 64-byte `[r_bytes || s_bytes]` Schnorr signature.
+pub fn schnorr_sign(sk: &Secp256k1Scalar, msg: &[u8], aux: Option<[u8; 32]>) -> [u8; 64] {
+    let g = Secp256k1Point::generator();
+    // 1) Compute P = G·d′ and enforce even‐Y
+    let mut d = sk.clone();
+    let mut P = &g * &d;
+    if P.y.to_bytes_be()[31] & 1 == 1 {
+        // flip secret and negate point
+        let n = Secp256k1ScalarField::order();
+        d = Secp256k1Scalar::new(n - d.value());
+        P = P.neg();
+    }
+    let pk_bytes = P.x_only_bytes();
 
-            let n = BigUint::from_bytes_be(&bytes);
-            if n < prime {
-                break n;
-            }
-        };
-
-        let g = Secp256k1Point::generator();
-        let sk = Scalar::new(num.clone());
-        let pk = sk.clone() * &g;
-
-        Self { sk, pk }
+    // 2) Compute nonce t = aux_hash ⊕ sk_bytes
+    let aux32 = aux.unwrap_or([0; 32]);
+    let aux_hash = tagged_hash("BIP0340/aux", &aux32);
+    let sk_bytes = d.to_bytes_be();
+    let mut t = [0u8; 32];
+    for i in 0..32 {
+        t[i] = sk_bytes[i] ^ aux_hash[i];
     }
 
-    /**
-     * first create the tagged hash of the message. Tag is based on the protocol.
-     */
+    // 3) Compute nonce k0 = int(tag_hash("BIP0340/nonce", t||pk||msg)) mod n
+    let mut buf = Vec::with_capacity(32 + 32 + msg.len());
+    buf.extend(&t);
+    buf.extend(&pk_bytes);
+    buf.extend(msg);
+    let hash_nonce = tagged_hash("BIP0340/nonce", &buf);
+    let mut k0 = Secp256k1Scalar::from_bytes_be(&hash_nonce);
 
-    /// BIP340-compliant signing
-    pub fn sign(&self, msg: &[u8], aux_rand: Option<[u8; 32]>) -> Option<Signature> {
-        let mut d = self.sk.clone();
-        let mut P = self.pk.clone(); // already x-only (even-y)
+    dbg!(
+        format!("k0 raw: {:x}", BigUint::from_bytes_be(&hash_nonce)),
+        format!("k0 mod n: {}", k0),
+    );
 
-        if P.y.value.bit(0) {
-            d = -d;
-            P = -P;
-        }
-
-        // ----- Step 1: Auxiliary randomness -----
-        let masked_key: [u8; 32] = if let Some(ndata) = aux_rand {
-            let mut hasher = Sha256::new();
-            hasher.update(b"BIP0340/aux");
-            let aux_hash = hasher.finalize();
-
-            let mut hasher = Sha256::new();
-            hasher.update(aux_hash);
-            hasher.update(aux_hash);
-            hasher.update(&ndata);
-            hasher.finalize().into()
-        } else {
-            [
-                84, 241, 105, 207, 201, 226, 229, 114, 116, 128, 68, 31, 144, 186, 37, 196, 136,
-                244, 97, 199, 11, 94, 165, 220, 170, 247, 175, 105, 39, 10, 165, 20,
-            ]
-        };
-
-        let t = BigUint::from_bytes_be(&masked_key) ^ &d.value;
-
-        // ----- Step 2: Compute nonce -----
-        let mut nonce_input = Vec::new();
-        nonce_input.extend_from_slice(&masked_key);
-        nonce_input.extend_from_slice(&P.x_only_bytes()); // 32-byte x(P)
-        nonce_input.extend_from_slice(msg);
-
-        let mut k = Scalar::tagged_hash(b"BIP0340/nonce", &nonce_input);
-
-        if k.value == BigUint::ZERO {
-            return None;
-        }
-
-        let mut R = k.clone() * &Secp256k1Point::generator();
-
-        // Ensure even Y for R
-        if R.y.value.bit(0) {
-            k = -k;
-            R = -R;
-        }
-
-        let r_x = R.x;
-
-        // ----- Step 3: Challenge scalar -----
-        let mut e_input = Vec::new();
-        e_input.extend_from_slice(&r_x.value.to_bytes_be());
-        e_input.extend_from_slice(&P.x_only_bytes());
-        e_input.extend_from_slice(msg);
-
-        let e = Scalar::<Secp256k1GroupField>::tagged_hash(b"BIP0340/challenge", &e_input);
-
-        // ----- Step 4: Signature scalar -----
-        let s = k + &(e * &d);
-
-        Some(Signature { r_x, s })
+    // 4) Compute R = k0*G; if yR is odd, k0 = n – k0, R = –R
+    let mut R = &g * &k0;
+    let r_y_odd = R.y.to_bytes_be()[31] & 1 == 1;
+    if r_y_odd {
+        let n = Secp256k1ScalarField::order();
+        k0 = Secp256k1Scalar::new(n - k0.value());
+        R = R.neg();
     }
+    let rx = R.x_only_bytes();
+
+    dbg!(format!("R.x: {:x}", BigUint::from_bytes_be(&rx)), r_y_odd);
+
+    // 5) Compute e = int(tag_hash("BIP0340/challenge", rx||pk||msg)) mod n
+    let mut buf2 = Vec::with_capacity(32 + 32 + msg.len());
+    buf2.extend(&rx);
+    buf2.extend(&pk_bytes);
+    buf2.extend(msg);
+    let e_bytes = tagged_hash("BIP0340/challenge", &buf2);
+    let e = Secp256k1Scalar::from_bytes_be(&e_bytes);
+
+    dbg!(format!("e: {}", e));
+
+    // 6) s = (k0 + e * d) mod n
+    let s = k0 + &(e * &d);
+
+    dbg!(format!("s: {}", s));
+    // 7) Return [rx || s_bytes]
+    let mut sig = [0u8; 64];
+    sig[0..32].copy_from_slice(&rx);
+    sig[32..64].copy_from_slice(&s.to_bytes_be());
+    sig
 }
 
-impl Signature {
-    pub fn verify(&self, msg: &[u8], pk: &PublicKey) -> bool {
-        let r_x = self.r_x.clone();
-        let s = self.s.clone();
+/// BIP-340 Verify
+///
+/// Returns `true` iff the signature is well-formed and
+/// satisfies `sG = R + eP` with correct even-y checks.
+pub fn schnorr_verify(pk_bytes: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
+    // 1) Parse P = lift_x(pk_bytes), reject if failure
+    let P = match Secp256k1Point::from_x_only(pk_bytes) {
+        Some(pt) => pt,
+        None => return false,
+    };
 
-        // Compute e = H(r_x || pk_x || msg)
-        let mut e_input = Vec::new();
-        e_input.extend_from_slice(&r_x.value.to_bytes_be());
-        e_input.extend_from_slice(&pk.x_only_bytes());
-        e_input.extend_from_slice(msg);
-
-        let e = Scalar::<Secp256k1GroupField>::tagged_hash(b"BIP0340/challenge", &e_input);
-
-        // R = s⋅G - e⋅P
-        let sG = s * &Secp256k1Point::generator();
-        let eP = e * pk;
-        let R = sG - &eP;
-
-        if R.is_infinite() {
-            return false;
-        }
-
-        !R.y.value.bit(0) && R.x.value == r_x.value
+    // 2) Split sig
+    let mut rx = [0u8; 32];
+    rx.copy_from_slice(&sig[0..32]);
+    let mut sb = [0u8; 32];
+    sb.copy_from_slice(&sig[32..64]);
+    let s = Secp256k1Scalar::from_bytes_be(&sb);
+    if s.value() >= &Secp256k1ScalarField::order() {
+        return false;
     }
+
+    // 3) e = int(tag_hash("BIP0340/challenge", rx||pk||msg)) mod n
+    let mut buf = Vec::with_capacity(32 + 32 + msg.len());
+    buf.extend(&rx);
+    buf.extend(pk_bytes);
+    buf.extend(msg);
+    let e_bytes = tagged_hash("BIP0340/challenge", &buf);
+    let e = Secp256k1Scalar::from_bytes_be(&e_bytes);
+
+    // 4) Compute R' = sG − eP
+    let g = Secp256k1Point::generator();
+    let Rprime = &g * &s - &(P.clone() * &e);
+
+    // 5) Check R' != inf, y even, x == rx
+    if Rprime.infinite {
+        return false;
+    }
+    if Rprime.y.to_bytes_be()[31] & 1 == 1 {
+        return false;
+    }
+    if Rprime.x_only_bytes() != rx {
+        return false;
+    }
+    true
 }
