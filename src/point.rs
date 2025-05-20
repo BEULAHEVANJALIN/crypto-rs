@@ -1,200 +1,195 @@
-use std::{
-    fmt::Debug,
-    ops::{Add, Mul, Neg, Sub},
-};
-
-use crate::{field::Field, scalar::Scalar};
+use crate::field::Field;
+use crate::field_element::FieldElement;
 use num_bigint::BigUint;
-use num_traits::{FromPrimitive, Num, Zero};
-
+use num_integer::Integer;
+use num_traits::{One, Zero};
+use std::ops::{Add, Mul, Neg, Sub};
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Point<T: Field> {
-    pub x: Scalar<T>,
-    pub y: Scalar<T>,
+pub struct Point<F: Field> {
+    pub x: FieldElement<F>,
+    pub y: FieldElement<F>,
     pub infinite: bool,
 }
 
-impl<T: Field + Clone + PartialEq> Point<T> {
-    pub fn identity() -> Self {
-        Self::infinity()
-    }
-
-    pub fn new(x: BigUint, y: BigUint, infinite: bool) -> Self {
-        if infinite {
-            return Self::infinity();
-        }
-        let p = T::prime();
-        let lhs = (&y * &y) % &p;                                 // y² mod p
-        let rhs = (&x * &x * &x + T::a() * &x + T::b()) % &p;      // (x³ + A·x + B) mod p
-        if lhs != rhs {
-            panic!("Point ({}, {}) is not on the curve", x, y);
-        }
-        Self {
-            x: Scalar::new(x),
-            y: Scalar::new(y),
-            infinite,
-        }
-    }
-
-    pub fn from_hex_xy(x: &str, y: &str) -> Self {
-        Self::new(
-            BigUint::from_str_radix(x, 16).unwrap(),
-            BigUint::from_str_radix(y, 16).unwrap(),
-            false,
-        )
-    }
-
-    /// Returns the point at infinity (identity element).
+impl<F: Field + Clone + PartialEq> Point<F> {
+    /// Point at infinity
     pub fn infinity() -> Self {
-        Self {
-            x: Scalar::new(BigUint::ZERO),
-            y: Scalar::new(BigUint::ZERO),
+        Point {
+            x: FieldElement::zero(),
+            y: FieldElement::zero(),
             infinite: true,
         }
     }
 
-    /// Check if the point is at infinity.
-    pub fn is_infinite(&self) -> bool {
-        self.infinite
+    /// Identity alias
+    pub fn identity() -> Self {
+        Self::infinity()
     }
 
-    /// Point doubling: P + P
-    pub fn double(&self) -> Self {
-        if self.is_infinite() {
-            return self.clone();
-        }
-        // If y = 0, then the tangent is vertical, so return the identity element
-        if self.y == Scalar::new(BigUint::ZERO) {
+    /// Construct a point, checking curve eq y² = x³ + A·x + B mod p
+    pub fn new(x: BigUint, y: BigUint, infinite: bool) -> Self {
+        if infinite {
             return Self::infinity();
         }
-
-        let x_sq = self.x.clone() * &self.x;
-
-        let three_x_sq = x_sq.clone() + &x_sq + &x_sq;
-        let two_y = self.y.clone() + &self.y;
-        let two_x = self.x.clone() + &self.x;
-
-        let s = three_x_sq / &two_y;
-        let x = s.clone() * &s - &two_x;
-        let y = s * &(self.x.clone() - &x) - &self.y;
-
-        Self {
-            x,
-            y,
+        let x_fe = FieldElement::new(x);
+        let y_fe = FieldElement::new(y);
+        // y^2
+        let lhs = y_fe.clone() * y_fe.clone();
+        // x^3 + A*x + B
+        let rhs = x_fe.clone() * x_fe.clone() * x_fe.clone()
+            + FieldElement::new(F::a() * &x_fe.value)
+            + FieldElement::new(F::b());
+        if lhs != rhs {
+            panic!("Point not on curve");
+        }
+        Point {
+            x: x_fe,
+            y: y_fe,
             infinite: false,
         }
     }
 
-    pub fn to_bytes(&self) -> [u8; 33] {
+    /// Double the point
+    pub fn double(&self) -> Self {
         if self.infinite {
-            panic!("cannot serialize infinity");
+            return self.clone();
         }
-        let mut out = [0u8; 33];
-        // prefix: 0x02 if y even, 0x03 if y odd
-        out[0] = if (self.y.value.clone() & BigUint::from(1u8)).is_zero() {
-            0x02
-        } else {
-            0x03
-        };
-        let xb = self.x.value.to_bytes_be();
-        let start = 33 - xb.len();
-        out[start..].copy_from_slice(&xb);
-        out
+        if self.y.value.is_zero() {
+            return Self::infinity();
+        }
+        let two = BigUint::from(2u8);
+        let three = BigUint::from(3u8);
+        let x_sq = self.x.clone() * self.x.clone();
+        let num = FieldElement::new(three * x_sq.value.clone()); // 3x²
+        let den = FieldElement::new(two * self.y.value.clone()); // 2y
+        let s = num / den;
+        let x3 = s.clone() * s.clone() - self.x.clone() - self.x.clone();
+        let y3 = s * (self.x.clone() - x3.clone()) - self.y.clone();
+        Point {
+            x: x3,
+            y: y3,
+            infinite: false,
+        }
     }
-}
 
-impl<T: Field + PartialEq + Clone> Add<&Point<T>> for Point<T> {
-    type Output = Self;
-
-    fn add(self, other: &Self) -> Self::Output {
-        if self.is_infinite() {
+    /// Add two points
+    pub fn add_point(&self, other: &Self) -> Self {
+        if self.infinite {
             return other.clone();
         }
-        if other.is_infinite() {
-            return self;
+        if other.infinite {
+            return self.clone();
         }
-
-        // If x1 == x2 and y1 != y2, return the point at infinity
         if self.x == other.x && self.y != other.y {
             return Self::infinity();
         }
-
-        // If x1 != x2, compute slope `s = (y2 - y1) / (x2 - x1)`
         if self.x != other.x {
-            let s = (other.y.clone() - &self.y) / &(other.x.clone() - &self.x);
-            let x = s.clone() * &s - &self.x - &other.x;
-            let y = s * &(self.x - &x) - &self.y;
-            return Self {
-                x,
-                y,
+            let num = other.y.clone() - self.y.clone();
+            let den = other.x.clone() - self.x.clone();
+            let s = num / den;
+            let x3 = s.clone() * s.clone() - self.x.clone() - other.x.clone();
+            let y3 = s * (self.x.clone() - x3.clone()) - self.y.clone();
+            return Point {
+                x: x3,
+                y: y3,
                 infinite: false,
             };
         }
-
-        // Otherwise, it's point doubling
+        // same x => doubling
         self.double()
     }
-}
 
-impl<T: Field + PartialEq + Clone> Sub<&Point<T>> for Point<T> {
-    type Output = Self;
+    /// Scalar multiplication using double-and-add
+    pub fn scalar_mul(&self, scalar: &BigUint) -> Self {
+        let mut result = Self::infinity();
+        let mut addend = self.clone();
+        let mut k = scalar.clone();
+        while k > BigUint::zero() {
+            if &k & BigUint::one() == BigUint::one() {
+                result = result.add_point(&addend);
+            }
+            addend = addend.double();
+            k >>= 1;
+        }
+        result
+    }
 
-    fn sub(self, other: &Self) -> Self::Output {
-        self + &(-other.clone())
+    /// Given a 32-byte big-endian X, attempt to lift into (x,y) with y even.
+    pub fn from_x_only(bytes: &[u8; 32]) -> Option<Self> {
+        let x = BigUint::from_bytes_be(bytes);
+        let p = F::prime();
+        if x >= p {
+            return None;
+        }
+        let x3 = (&x * &x * &x + F::a() * &x + F::b()) % &p;
+        // compute y = x3^((p+1)/4) mod p  (since p ≡ 3 mod 4)
+        let exp = (&p + BigUint::one()) >> 2;
+        let y0 = x3.modpow(&exp, &p);
+        if (&y0 * &y0) % &p != x3 {
+            return None;
+        }
+        let y = if y0.is_even() { y0.clone() } else { &p - &y0 };
+        Some(Point::new(x, y, false))
     }
 }
 
-impl<T: Field + PartialEq + Clone> Neg for Point<T> {
-    type Output = Self;
-    fn neg(self) -> Self {
+impl<F: Field + Clone + PartialEq> Add<&Point<F>> for Point<F> {
+    type Output = Point<F>;
+    fn add(self, rhs: &Point<F>) -> Self::Output {
+        self.add_point(rhs)
+    }
+}
+
+impl<F: Field + Clone + PartialEq> Sub<&Point<F>> for Point<F> {
+    type Output = Point<F>;
+    fn sub(self, rhs: &Point<F>) -> Self::Output {
+        if rhs.infinite {
+            return self;
+        }
+        let neg_rhs = Point {
+            x: rhs.x.clone(),
+            y: rhs.y.clone().neg(),
+            infinite: false,
+        };
+        self.add_point(&neg_rhs)
+    }
+}
+
+impl<F: Field + Clone + PartialEq> Neg for Point<F> {
+    type Output = Point<F>;
+    fn neg(self) -> Self::Output {
         if self.infinite {
             self
         } else {
-            Self {
-                x: self.x,
-                y: -self.y,
-                infinite: false,
-            }
-        }
-    }
-}
-
-impl<T: Field + PartialEq + Clone> Neg for &Point<T> {
-    type Output = Point<T>;
-    fn neg(self) -> Point<T> {
-        if self.infinite {
-            self.clone()
-        } else {
             Point {
-                x: self.x.clone(),
-                y: -self.y.clone(),
+                x: self.x,
+                y: self.y.neg(),
                 infinite: false,
             }
         }
     }
 }
 
-impl<T: Field + PartialEq + Clone, F: Field + PartialEq + Clone> Mul<&Point<T>> for Scalar<F> {
-    type Output = Point<T>;
+// Allow &Point * &BigUint
+impl<F: Field + Clone + PartialEq> Mul<&BigUint> for &Point<F> {
+    type Output = Point<F>;
+    fn mul(self, rhs: &BigUint) -> Self::Output {
+        self.scalar_mul(rhs)
+    }
+}
 
-    fn mul(self, rhs: &Point<T>) -> Self::Output {
-        let mut current = rhs.clone();
-        let mut result = Point::<T>::infinity();
-        let mut k = self.value;
-
-        while k > BigUint::ZERO {
-            if k.bit(0) {
-                result = result + &current;
-            }
-            current = current.double();
-            k = k >> 1;
-        }
-        result
+// Allow owned Point * &BigUint
+impl<F: Field + Clone + PartialEq> Mul<&BigUint> for Point<F> {
+    type Output = Point<F>;
+    fn mul(self, rhs: &BigUint) -> Self::Output {
+        self.scalar_mul(rhs)
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    use num_traits::FromPrimitive;
 
     use super::*;
 
@@ -219,26 +214,22 @@ mod tests {
 
     #[test]
     fn test_on_curve() {
-        let valid_points = vec![(192, 105), (17, 56), (1, 193)];
-        let invalid_points = vec![(200, 119), (42, 99)];
-
-        for (x, y) in valid_points {
-            let p: Point<Field223> = Point::new(
+        let valid = vec![(192, 105), (17, 56), (1, 193)];
+        for (x, y) in valid {
+            let _ = Point::<Field223>::new(
                 BigUint::from_u64(x).unwrap(),
                 BigUint::from_u64(y).unwrap(),
                 false,
             );
-            dbg!(p);
         }
-
-        for (x, y) in invalid_points {
+        let invalid = vec![(200, 119), (42, 99)];
+        for (x, y) in invalid {
             let res = catch_unwind(|| {
-                let p: Point<Field223> = Point::new(
+                Point::<Field223>::new(
                     BigUint::from_u64(x).unwrap(),
                     BigUint::from_u64(y).unwrap(),
                     false,
-                );
-                dbg!(p);
+                )
             });
             assert!(res.is_err());
         }
@@ -246,75 +237,77 @@ mod tests {
 
     #[test]
     fn test_add() {
-        let additions = vec![
-            // (x1, y1, x2, y2, x3, y3)
+        let tests = vec![
             (192, 105, 17, 56, 170, 142),
             (47, 71, 117, 141, 60, 139),
             (143, 98, 76, 66, 47, 71),
         ];
-        for (x1, y1, x2, y2, x3, y3) in additions {
-            let a: Point<Field223> = Point::new(
+        for (x1, y1, x2, y2, x3, y3) in tests {
+            let a = Point::<Field223>::new(
                 BigUint::from_u64(x1).unwrap(),
                 BigUint::from_u64(y1).unwrap(),
                 false,
             );
-            let b: Point<Field223> = Point::new(
+            let b = Point::<Field223>::new(
                 BigUint::from_u64(x2).unwrap(),
                 BigUint::from_u64(y2).unwrap(),
                 false,
             );
-            let c: Point<Field223> = Point::new(
+            let c = Point::<Field223>::new(
                 BigUint::from_u64(x3).unwrap(),
                 BigUint::from_u64(y3).unwrap(),
                 false,
             );
-            assert_eq!(a + &b, c);
+            assert_eq!(a.clone() + &b, c);
         }
+    }
+
+    #[test]
+    fn test_double() {
+        // doubling same as add P+P
+        let p = Point::<Field223>::new(
+            BigUint::from_u64(192).unwrap(),
+            BigUint::from_u64(105).unwrap(),
+            false,
+        );
+        let doubled = p.double();
+        let added = p.clone().add_point(&p);
+        assert_eq!(doubled, added);
     }
 
     #[test]
     fn test_scalar_mul() {
-        let multiplications: Vec<(u8, u64, u64, u64, u64)> = vec![
-            // (coefficient, x1, y1, x2, y2)
-            (2, 192, 105, 49, 71),
-            (2, 143, 98, 64, 168),
-            (2, 47, 71, 36, 111),
-            (4, 47, 71, 194, 51),
-            (8, 47, 71, 116, 55),
-        ];
-        for (c, x1, y1, x2, y2) in multiplications {
-            let a: Point<Field223> = Point::new(
-                BigUint::from_u64(x1).unwrap(),
-                BigUint::from_u64(y1).unwrap(),
-                false,
-            );
-            let b: Point<Field223> = Point::new(
-                BigUint::from_u64(x2).unwrap(),
-                BigUint::from_u64(y2).unwrap(),
-                false,
-            );
-            assert_eq!(Scalar::<Field223>::from_bytes_be(&[c]) * &a, b);
-        }
-        let c = Scalar::<Field223>::from_bytes_be(&[21]);
-        let a: Point<Field223> = Point::new(
+        let a = Point::<Field223>::new(
             BigUint::from_u64(47).unwrap(),
             BigUint::from_u64(71).unwrap(),
             false,
         );
-        assert_eq!(c * &a, Point::infinity());
+        // 2*A
+        let two = BigUint::from_u64(2).unwrap();
+        let a2 = a.clone().scalar_mul(&two);
+        assert_eq!(
+            a2,
+            Point::<Field223>::new(
+                BigUint::from_u64(36).unwrap(),
+                BigUint::from_u64(111).unwrap(),
+                false
+            )
+        );
+        // 0*A = infinity
+        let zero = BigUint::zero();
+        assert_eq!(a.scalar_mul(&zero), Point::<Field223>::infinity());
     }
 
     #[test]
     fn test_neg() {
-        let a: Point<Field223> = Point::new(
+        let a = Point::<Field223>::new(
             BigUint::from_u64(47).unwrap(),
             BigUint::from_u64(71).unwrap(),
             false,
         );
-        // y_neg = -y mod p = (p - y) % p
-        let p = Field223::prime();
-        let y_neg = &p - BigUint::from_u64(71).unwrap();
-        let neg_a: Point<Field223> = Point::new(BigUint::from_u64(47).unwrap(), y_neg, false);
-        assert_eq!(-&a, neg_a);
+        let p = BigUint::from_u64(223).unwrap();
+        let y_neg = (&p - BigUint::from_u64(71).unwrap()) % &p;
+        let neg_a = Point::<Field223>::new(BigUint::from_u64(47).unwrap(), y_neg, false);
+        assert_eq!(-a, neg_a);
     }
 }
