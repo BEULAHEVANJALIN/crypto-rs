@@ -1,115 +1,163 @@
-use crate::{field::EccPointField, point::Point, scalar::Scalar};
+// secp256k1.rs — wiring up FieldElement & Scalar types for secp256k1
+use crate::{
+    field::{Secp256k1Field, Secp256k1ScalarField},
+    point::Point,
+    scalar::Scalar,
+};
 use num_bigint::BigUint;
+use num_traits::Num;
 
-pub type Secp256k1Point = Point<EccPointField>;
+/// Specialized types
+pub type Secp256k1Point = Point<Secp256k1Field>;
+pub type Secp256k1Scalar = Scalar<Secp256k1ScalarField>;
+
+/// Generator coordinates (big-endian hex strings)
+const G_X: &str = crate::field::SECP256K1_G_X;
+const G_Y: &str = crate::field::SECP256K1_G_Y;
 
 impl Secp256k1Point {
-    pub fn generator() -> Secp256k1Point {
-        let gx = BigUint::from_bytes_be(&[
-            0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95, 0xCE, 0x87,
-            0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59, 0xF2, 0x81, 0x5B,
-            0x16, 0xF8, 0x17, 0x98,
-        ]);
-        let gy = BigUint::from_bytes_be(&[
-            0x48, 0x3A, 0xDA, 0x77, 0x26, 0xA3, 0xC4, 0x65, 0x5D, 0xA4, 0xFB, 0xFC, 0x0E, 0x11,
-            0x08, 0xA8, 0xFD, 0x17, 0xB4, 0x48, 0xA6, 0x85, 0x54, 0x19, 0x9C, 0x47, 0xD0, 0x8F,
-            0xFB, 0x10, 0xD4, 0xB8,
-        ]);
-
-        Secp256k1Point {
-            x: Scalar::new(gx),
-            y: Scalar::new(gy),
-            infinite: false,
-        }
+    pub fn from_hex_xy(xh: &str, yh: &str) -> Self {
+        let x = BigUint::from_str_radix(xh, 16).unwrap();
+        let y = BigUint::from_str_radix(yh, 16).unwrap();
+        Self::new(x, y, false)
     }
 
-    pub fn x_only_bytes(&self) -> Vec<u8> {
-        self.x.value.to_bytes_be()
+    /// Returns the standard generator G.
+    pub fn generator() -> Self {
+        Secp256k1Point::from_hex_xy(G_X, G_Y)
+    }
+
+    /// Returns the x-coordinate as 32-byte big-endian
+    pub fn x_only_bytes(&self) -> [u8; 32] {
+        self.x.to_bytes_be()
+    }
+}
+
+//-----------------------------
+// Scalar multiplication impl
+//-----------------------------
+use std::ops::Mul;
+
+/// Allow &Point * &Scalar → Point
+impl<'a> Mul<&'a Secp256k1Scalar> for &'a Secp256k1Point {
+    type Output = Secp256k1Point;
+    fn mul(self, scalar: &'a Secp256k1Scalar) -> Secp256k1Point {
+        // Point::scalar_mul expects &BigUint
+        self.scalar_mul(scalar.value())
+    }
+}
+
+/// Also allow owned Point * &Scalar → Point
+impl<'a> Mul<&'a Secp256k1Scalar> for Secp256k1Point {
+    type Output = Secp256k1Point;
+    fn mul(self, scalar: &'a Secp256k1Scalar) -> Secp256k1Point {
+        (&self).mul(scalar)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{str::FromStr, time::Instant};
-
-    use crate::{
-        field::{Field, Secp256k1GroupField},
-        scalar::Scalar,
-    };
-
     use super::*;
-    use num_traits::{FromPrimitive, Num};
+    use num_traits::{Num, One};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use std::str::FromStr;
 
-    fn pub_key_check(p1: PublicKey, p: Secp256k1Point) {
-        let pk = hex::encode(&p1.serialize_uncompressed()[1..]);
-        assert_eq!(pk.len(), 128);
-        assert_eq!(&pk[0..64], &(p.x.to_hex()[2..]));
-        assert_eq!(&pk[64..], &(p.y.to_hex()[2..]));
+    /// Check that our generator*scalar matches rust-secp256k1
+    fn check_pubkey(hex_priv: &str) {
+        let secp = Secp256k1::new();
+        let pk_hex = format!("{:0>64}", hex_priv);
+        let sk = SecretKey::from_str(&pk_hex).unwrap();
+        let pk = PublicKey::from_secret_key(&secp, &sk);
+
+        // our scalar and point
+        let priv_big = BigUint::from_str_radix(&pk_hex, 16).unwrap();
+        let my_scalar = Secp256k1Scalar::new(priv_big);
+        let g = Secp256k1Point::generator();
+        let my_point = &g * &my_scalar;
+
+        // compare x,y
+        let ser = pk.serialize_uncompressed();
+        // skip leading 0x04
+        assert_eq!(&ser[1..33], &my_point.x_only_bytes());
+        assert_eq!(&ser[33..], &my_point.y.to_bytes_be());
     }
 
     #[test]
-    fn test_demo() {
-        let g = Secp256k1Point::generator();
-        let secp = &Secp256k1::new();
-        let k = "0000000000000000000000000000000000000000000000000000000000000005";
-        let sk = SecretKey::from_str(k).unwrap();
-        let p1 = PublicKey::from_secret_key(secp, &sk);
+    fn test_small_key() {
+        check_pubkey("5");
+    }
 
-        let uk = BigUint::from_str_radix(k, 16).unwrap();
-        let p = Scalar::<Secp256k1GroupField>::new(uk) * &g;
+    use hex;
+    use ring::rand::{SecureRandom, SystemRandom};
 
-        pub_key_check(p1, p);
+    pub fn random_32byte_hex() -> String {
+        let rng = SystemRandom::new();
+        let mut buf = [0u8; 32];
+        rng.fill(&mut buf).unwrap();
+        hex::encode(buf)
+    }
+
+    #[test]
+    fn test_random_key() {
+        let hex_key = random_32byte_hex();
+        check_pubkey(&hex_key);
     }
 
     #[test]
     fn test_scalar_mul() {
-        let one = BigUint::from_bytes_be(&[0x1]);
-        let points = vec![
+        // testing known multiplies of G
+        let vectors = vec![
             (
-                BigUint::from_u8(7).unwrap(),
+                BigUint::from(7u8),
                 "5cbdf0646e5db4eaa398f365f2ea7a0e3d419b7e0330e39ce92bddedcac4f9bc",
                 "6aebca40ba255960a3178d6d861a54dba813d0b813fde7b5a5082628087264da",
             ),
             (
-                BigUint::from_u64(1485).unwrap(),
+                BigUint::from(1485u16),
                 "c982196a7466fbbbb0e27a940b6af926c1a74d5ad07128c82824a11b5398afda",
                 "7a91f9eae64438afb9ce6448a1c133db2d8fb9254e4546b6f001637d50901f55",
             ),
             (
-                one.clone() << 128,
+                (BigUint::one() << 128),
                 "8f68b9d2f63b5f339239c1ad981f162ee88c5678723ea3351b7b444c9ec4c0da",
                 "662a9f2dba063986de1d90c2b6be215dbbea2cfe95510bfdf23cbf79501fff82",
             ),
             (
-                (one.clone() << 240) + &(one << 31),
+                ((BigUint::one() << 240) + (BigUint::one() << 31)),
                 "9577ff57c8234558f293df502ca4f09cbc65a6572c842b39b366f21717945116",
                 "10b49c67fa9365ad7b90dab070be339a1daf9052373ec30ffae4f72d5e66d053",
             ),
         ];
-
-        let sec_point_vec: Vec<_> = points
-            .iter()
-            .map(|(sec, x, y)| (sec, Secp256k1Point::from_hex_xy(x, y)))
-            .collect();
-        assert_eq!(sec_point_vec.len(), points.len());
         let g = Secp256k1Point::generator();
-
-        for (i, (k, x, y)) in points.iter().enumerate() {
-            let start = Instant::now();
-            let p = Scalar::<Secp256k1GroupField>::new(k.clone()) * &g;
-            let duration = start.elapsed();
-            println!("Time elapsed in my_function() is: {:?}", duration);
-            assert_eq!(&(p.x.to_hex()[2..]), *x, "at {i}");
-            assert_eq!(&(p.y.to_hex()[2..]), *y, "at {i}");
+        for (k, xhex, yhex) in vectors {
+            let s = Secp256k1Scalar::new(k);
+            let p = &g * &s;
+            assert_eq!(hex::encode(p.x_only_bytes()), xhex);
+            assert_eq!(hex::encode(p.y.to_bytes_be()), yhex);
         }
     }
 
+    /// Compare our point with rust-secp256k1's PublicKey
+    fn pub_key_check(pk1: PublicKey, p2: Secp256k1Point) {
+        let ser = pk1.serialize_uncompressed();
+        // skip 0x04
+        assert_eq!(&ser[1..33], &p2.x_only_bytes());
+        assert_eq!(&ser[33..65], &p2.y.to_bytes_be());
+    }
+
     #[test]
-    fn test_order() {
-        let res = (Scalar::<Secp256k1GroupField>::new(Secp256k1GroupField::prime())
-            * &Secp256k1Point::generator())
-            .is_infinite();
-        assert!(res);
+    fn test_demo() {
+        // secret = 5
+        let hex_sk = "0000000000000000000000000000000000000000000000000000000000000005";
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_str(hex_sk).unwrap();
+        let pk1 = PublicKey::from_secret_key(&secp, &sk);
+
+        // our scalar & point
+        let uk = BigUint::from_str_radix(hex_sk, 16).unwrap();
+        let s2 = Secp256k1Scalar::new(uk);
+        let g = Secp256k1Point::generator();
+        let p2 = &g * &s2;
+        pub_key_check(pk1, p2);
     }
 }
