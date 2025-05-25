@@ -9,16 +9,20 @@ use num_bigint::BigUint;
 use sha2::{Digest, Sha256};
 
 /// Tagged-SHA256: SHA256(SHA256(tag) || SHA256(tag) || data)
-fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
-    let tag_hash = Sha256::digest(tag.as_bytes());
+pub fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
+    let mut tag_hasher = Sha256::new();
+    tag_hasher.update(tag.as_bytes());
+    let tag_hash = tag_hasher.finalize();
+
     let mut h = Sha256::new();
-    h.update(&tag_hash);
-    h.update(&tag_hash);
+    h.update(tag_hash);
+    h.update(tag_hash);
     h.update(data);
-    let out = h.finalize();
-    let mut buf = [0u8; 32];
-    buf.copy_from_slice(&out);
-    buf
+    let result = h.finalize();
+
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
 }
 
 /// BIP-340 keypair: derive x-only public key from secret scalar

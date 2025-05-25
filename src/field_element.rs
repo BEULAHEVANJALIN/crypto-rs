@@ -107,6 +107,7 @@ impl<F: Field> Neg for FieldElement<F> {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl<F: Field> Div for FieldElement<F> {
     type Output = Self;
     fn div(self, rhs: Self) -> Self::Output {

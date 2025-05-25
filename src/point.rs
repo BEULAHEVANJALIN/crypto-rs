@@ -1,3 +1,4 @@
+#![allow(non_snake_case)]
 use crate::field::Field;
 use crate::field_element::FieldElement;
 use num_bigint::BigUint;
@@ -130,6 +131,50 @@ impl<F: Field + Clone + PartialEq> Point<F> {
         }
         let y = if y0.is_even() { y0.clone() } else { &p - &y0 };
         Some(Point::new(x, y, false))
+    }
+
+    /// Returns true if the y-coordinate is odd
+    pub fn y_is_odd(&self) -> bool {
+        !self.y.value.is_even()
+    }
+
+    /// Parse a 33-byte SEC1 compressed point (0x02=even-y, 0x03=odd-y)
+    pub fn from_bytes_compressed(bytes: &[u8; 33]) -> Option<Self> {
+        let prefix = bytes[0];
+        if prefix != 0x02 && prefix != 0x03 {
+            return None;
+        }
+        // copy the 32-byte X coordinate
+        let mut xb = [0u8; 32];
+        xb.copy_from_slice(&bytes[1..33]);
+
+        // recover the even-Y solution (or None if x is not on the curve)
+        let mut P = Point::from_x_only(&xb)?;
+
+        // if prefix==0x03, flip to the odd-Y root
+        if prefix == 0x03 {
+            P.y = -P.y;
+        }
+        Some(P)
+    }
+
+    /// 33-byte SEC1 compressed encoding: 0x02 if y even, 0x03 if y odd, followed by big-endian x
+    pub fn to_bytes_compressed(&self) -> [u8; 33] {
+        assert!(!self.infinite, "cannot serialize the point at infinity");
+        let mut out = [0u8; 33];
+        out[0] = if self.y.value.is_even() { 0x02 } else { 0x03 };
+        // get x in big-endian, then pad on the left
+        let xb = self.x.value.to_bytes_be();
+        if xb.len() > 32 {
+            panic!("x coordinate is too large");
+        }
+        let pad = 32 - xb.len();
+        // fill the padding zeros (this loop is optional since out is already zeroed)
+        for i in 0..pad {
+            out[1 + i] = 0;
+        }
+        out[1 + pad..33].copy_from_slice(&xb);
+        out
     }
 }
 
@@ -309,5 +354,14 @@ mod tests {
         let y_neg = (&p - BigUint::from_u64(71).unwrap()) % &p;
         let neg_a = Point::<Field223>::new(BigUint::from_u64(47).unwrap(), y_neg, false);
         assert_eq!(-a, neg_a);
+    }
+
+    #[test]
+    fn test_compress() {
+        let G = Point::generator();
+        let bytes = G.to_bytes_compressed();
+        assert_eq!(bytes[0], 0x02); // G’s y is even
+        let G1 = Point::from_bytes_compressed(&bytes).unwrap();
+        assert_eq!(G1, G);
     }
 }

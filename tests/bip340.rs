@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::{fs::File, path::Path};
 
 use crypto_rs::field::{Field, Secp256k1Field};
-use crypto_rs::schnorr::{schnorr_verify};
+use crypto_rs::schnorr::schnorr_verify;
 use crypto_rs::secp256k1::{Secp256k1Point, Secp256k1Scalar};
 
 #[derive(Debug, Deserialize)]

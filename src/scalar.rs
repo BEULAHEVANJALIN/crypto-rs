@@ -5,6 +5,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 use crate::field::ScalarField;
 use num_bigint::BigUint;
 use num_traits::{Euclid, One, Zero};
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 /// Used for everything that's 'scalar' in the crypto sense:
@@ -37,6 +38,13 @@ impl<F: ScalarField> Scalar<F> {
         &self.value
     }
 
+    pub fn zero() -> Self {
+        Self::new(BigUint::zero())
+    }
+    pub fn one() -> Self {
+        Self::new(BigUint::one())
+    }
+
     /// Serialize to 32-byte big-endian (mod order)
     pub fn to_bytes_be(&self) -> [u8; 32] {
         let mut buf = [0u8; 32];
@@ -47,7 +55,7 @@ impl<F: ScalarField> Scalar<F> {
 
     /// Create from big-endian bytes, reduced mod order
     pub fn from_bytes_be(bytes: &[u8]) -> Self {
-        let num = BigUint::from_bytes_be(bytes);
+        let num = BigUint::from_bytes_be(bytes) % F::order();
         Self::new(num)
     }
 
@@ -92,11 +100,17 @@ impl<F: ScalarField> Scalar<F> {
     pub fn tagged_hash(tag: &[u8], msg: &[u8]) -> Self {
         let tag_hash = Sha256::digest(tag);
         let mut h = Sha256::new();
-        h.update(&tag_hash);
-        h.update(&tag_hash);
+        h.update(tag_hash);
+        h.update(tag_hash);
         h.update(msg);
         let out = h.finalize();
         Scalar::from_bytes_be(&out)
+    }
+
+    pub fn random<R: RngCore + ?Sized>(rng: &mut R) -> Self {
+        let mut buf = [0u8; 32];
+        rng.fill_bytes(&mut buf);
+        Scalar::from_bytes_be(&buf)
     }
 }
 
@@ -140,6 +154,7 @@ impl<F: ScalarField> Mul<&Scalar<F>> for &Scalar<F> {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl<F: ScalarField> Div<&Scalar<F>> for Scalar<F> {
     type Output = Self;
     fn div(self, rhs: &Self) -> Self {
