@@ -41,8 +41,21 @@ impl<F: ScalarField> Scalar<F> {
     pub fn zero() -> Self {
         Self::new(BigUint::zero())
     }
+
+    pub fn is_zero(&self) -> bool {
+        self.value.is_zero()
+    }
     pub fn one() -> Self {
         Self::new(BigUint::one())
+    }
+
+    pub fn is_one(&self) -> bool {
+        self.value == BigUint::one()
+    }
+
+    pub fn is_valid(&self) -> bool {
+        let modulus = F::order();
+        self.value > BigUint::zero() && self.value < modulus
     }
 
     /// Serialize to 32-byte big-endian (mod order)

@@ -27,6 +27,12 @@ impl<F: Field + Clone + PartialEq> Point<F> {
         Self::infinity()
     }
 
+    
+    /// Check if the point is the identity
+    pub fn is_identity(&self) -> bool {
+        self.infinite
+    }
+    
     /// Construct a point, checking curve eq y² = x³ + A·x + B mod p
     pub fn new(x: BigUint, y: BigUint, infinite: bool) -> Self {
         if infinite {
