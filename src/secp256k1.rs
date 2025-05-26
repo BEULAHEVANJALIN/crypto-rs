@@ -1,10 +1,11 @@
 // secp256k1.rs — wiring up FieldElement & Scalar types for secp256k1
 use crate::{
-    field::{Secp256k1Field, Secp256k1ScalarField},
+    field::{Field, Secp256k1Field, Secp256k1ScalarField},
     point::Point,
     scalar::Scalar,
 };
 use num_bigint::BigUint;
+use num_integer::Integer;
 use num_traits::Num;
 
 /// Specialized types
@@ -30,6 +31,20 @@ impl Secp256k1Point {
     /// Returns the x-coordinate as 32-byte big-endian
     pub fn x_only_bytes(&self) -> [u8; 32] {
         self.x.to_bytes_be()
+    }
+
+    /// Return a point whose Y is even.  Identity stays identity.
+    pub fn normalize_parity(&self) -> Secp256k1Point {
+        if self.is_identity() {
+            self.clone()
+        } else if self.y.value.is_odd() {
+            // reflect Y across the curve: y -> p - y
+            let p = Secp256k1Field::prime();
+            let y_even = (&p - &self.y.value) % &p;
+            Secp256k1Point::new(self.x.value.clone(), y_even, false)
+        } else {
+            self.clone()
+        }
     }
 }
 
