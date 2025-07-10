@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+use crate::tagged_hash::tagged_hash;
 use std::ops::Neg;
 
 use crate::{
@@ -6,24 +7,6 @@ use crate::{
     secp256k1::{Secp256k1Point, Secp256k1Scalar},
 };
 use num_bigint::BigUint;
-use sha2::{Digest, Sha256};
-
-/// Tagged-SHA256: SHA256(SHA256(tag) || SHA256(tag) || data)
-pub fn tagged_hash(tag: &str, data: &[u8]) -> [u8; 32] {
-    let mut tag_hasher = Sha256::new();
-    tag_hasher.update(tag.as_bytes());
-    let tag_hash = tag_hasher.finalize();
-
-    let mut h = Sha256::new();
-    h.update(tag_hash);
-    h.update(tag_hash);
-    h.update(data);
-    let result = h.finalize();
-
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&result);
-    out
-}
 
 /// BIP-340 keypair: derive x-only public key from secret scalar
 pub fn schnorr_pubkey(sk: &Secp256k1Scalar) -> [u8; 32] {

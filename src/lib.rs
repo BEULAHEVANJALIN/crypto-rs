@@ -8,3 +8,4 @@ pub mod polynomial;
 pub mod scalar;
 pub mod schnorr;
 pub mod secp256k1;
+pub mod tagged_hash;
