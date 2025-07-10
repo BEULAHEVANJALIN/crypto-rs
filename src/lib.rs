@@ -1,3 +1,4 @@
+pub mod feldman;
 pub mod field;
 mod field_element;
 pub mod point;
