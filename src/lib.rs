@@ -1,3 +1,4 @@
+pub mod dl_proof;
 pub mod feldman;
 pub mod field;
 mod field_element;
