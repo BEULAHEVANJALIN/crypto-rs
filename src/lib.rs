@@ -2,6 +2,7 @@ pub mod dl_proof;
 pub mod feldman;
 pub mod field;
 mod field_element;
+pub mod lagrange;
 pub mod point;
 pub mod polynomial;
 pub mod scalar;
