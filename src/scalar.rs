@@ -5,8 +5,9 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 use crate::field::ScalarField;
 use num_bigint::BigUint;
 use num_traits::{Euclid, One, Zero};
-use rand::RngCore;
 use sha2::{Digest, Sha256};
+use rand::rand_core::{TryRngCore, OsRng};
+
 
 /// Used for everything that's 'scalar' in the crypto sense:
 /// secret keys, nonces, signature scalars (s, e, k), challenge hashes reduced mod n.
@@ -120,9 +121,9 @@ impl<F: ScalarField> Scalar<F> {
         Scalar::from_bytes_be(&out)
     }
 
-    pub fn random<R: RngCore + ?Sized>(rng: &mut R) -> Self {
+    pub fn random() -> Self {
         let mut buf = [0u8; 32];
-        rng.fill_bytes(&mut buf);
+        OsRng.try_fill_bytes(&mut buf).unwrap();
         Scalar::from_bytes_be(&buf)
     }
 }
