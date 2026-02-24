@@ -30,7 +30,7 @@ pub const SECP256K1_G_Y: &str = "483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A685541
 
 /// Base‐field for secp256k1: Fp where
 ///     p = 2^256 − 2^32 − 977
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Secp256k1Field;
 impl Field for Secp256k1Field {
     fn prime() -> BigUint {
