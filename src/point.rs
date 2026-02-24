@@ -5,7 +5,7 @@ use num_bigint::BigUint;
 use num_integer::Integer;
 use num_traits::{One, Zero};
 use std::ops::{Add, Mul, Neg, Sub};
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Point<F: Field> {
     pub x: FieldElement<F>,
     pub y: FieldElement<F>,

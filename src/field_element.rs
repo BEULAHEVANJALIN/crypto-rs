@@ -9,7 +9,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 /// Used for curve point coordinates (x, y),
 /// and all the operations in your Point<F> implementation (point doubling, addition, lift_x, etc.)
 /// Modulus = p, the prime of the curve’s base field (for secp256k1:p = 2²⁵⁶ – 2³² – 977)
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Hash)]
 pub struct FieldElement<F: Field> {
     pub value: BigUint,
     _marker: PhantomData<F>,
